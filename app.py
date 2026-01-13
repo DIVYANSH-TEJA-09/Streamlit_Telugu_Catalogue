@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import math
 import random
+from st_aggrid import AgGrid, GridOptionsBuilder
 
 # ==============================================================================
 # 1. CONFIG & STYLING
@@ -102,7 +103,7 @@ st.markdown("""
 # ==============================================================================
 @st.cache_data
 def load_and_prep_data():
-    file_path = "final_books.csv"
+    file_path = "final_catalogue.csv"
     try:
         # Load File
         df = pd.read_csv(file_path, encoding='utf-8')
@@ -194,7 +195,10 @@ with st.expander("Filter by Category, Language, Publisher, Year", expanded=False
     with f_col2:
         # Language Facet
         langs = sorted(data['Language'].dropna().unique())
-        sel_langs = st.multiselect("Language", langs, placeholder="All Languages")
+        if "Telugu" in langs:
+            sel_langs = st.multiselect("Language", langs, default=["Telugu"], placeholder="All Languages")
+        else:
+            sel_langs = st.multiselect("Language", langs, placeholder="All Languages")
         
     with f_col3:
         # Publisher Facet
@@ -246,15 +250,28 @@ with st.sidebar:
 
 
 # ==============================================================================
-# 5. RESULTS CONTROL & SORTING
+# 5. RESULTS CONTROL & SORTING & VIEW MODE
 # ==============================================================================
 if not filtered_df.empty:
     
-    # Control Row
-    c_res, c_sort = st.columns([3, 1])
+    # Initialize view mode in session state
+    if 'view_mode' not in st.session_state:
+        st.session_state.view_mode = "Grid"
+    
+    # Control Row with Buttons and Sorting
+    c_res, c_buttons, c_sort = st.columns([2, 2, 1])
     
     with c_res:
         st.markdown(f"<div class='result-stats'>Found <b>{len(filtered_df):,}</b> results</div>", unsafe_allow_html=True)
+    
+    with c_buttons:
+        btn_col1, btn_col2 = st.columns(2)
+        with btn_col1:
+            if st.button("📊 Grid View", use_container_width=True, type="primary" if st.session_state.view_mode == "Grid" else "secondary"):
+                st.session_state.view_mode = "Grid"
+        with btn_col2:
+            if st.button("📚 Card View", use_container_width=True, type="primary" if st.session_state.view_mode == "Card" else "secondary"):
+                st.session_state.view_mode = "Card"
         
     with c_sort:
         sort_opt = st.selectbox(
@@ -272,68 +289,189 @@ if not filtered_df.empty:
         filtered_df = filtered_df.sort_values('Book Title', ascending=True)
 
     # ==============================================================================
-    # 6. PAGINATION & RENDERING
+    # 6. AG GRID VIEW (Advanced Interactive Grid)
     # ==============================================================================
-    ITEMS_PER_PAGE = 20
-    if len(filtered_df) > ITEMS_PER_PAGE:
-        total_pages = math.ceil(len(filtered_df) / ITEMS_PER_PAGE)
+    if st.session_state.view_mode == "Grid":
+        st.markdown("### 📊 Interactive Table View")
         
-        # Page State
-        if 'page' not in st.session_state: st.session_state.page = 1
+        # Create layout with grid and stats
+        grid_col, stats_col = st.columns([3, 1], gap="large")
         
-        # Pagination Controls (Centered)
-        c_p1, c_p2, c_p3 = st.columns([1, 2, 1])
-        with c_p2:
-            st.markdown(f"<div style='text-align:center'>Page {st.session_state.page} of {total_pages}</div>", unsafe_allow_html=True)
-            pp_col, nn_col = st.columns(2)
-            with pp_col:
-                if st.button("Previous") and st.session_state.page > 1:
-                    st.session_state.page -= 1
-                    st.rerun()
-            with nn_col:
-                if st.button("Next") and st.session_state.page < total_pages:
-                    st.session_state.page += 1
-                    st.rerun()
+        with grid_col:
+            # Prepare data for display (select key columns)
+            grid_df = filtered_df[[
+                'Book Title', 'Author(s)', 'Year', 'Category', 
+                'Language', 'Publisher', 'Number of Pages'
+            ]].copy()
+            
+            # Clean up the dataframe for display
+            grid_df = grid_df.reset_index(drop=True)
+            
+            # Configure AG Grid with performance optimizations
+            gb = GridOptionsBuilder.from_dataframe(grid_df)
+            gb.configure_pagination(
+                enabled=True,
+                paginationPageSize=20,
+                paginationAutoPageSize=False
+            )
+            gb.configure_side_bar()
+            gb.configure_selection(
+                selection_mode="single",
+                use_checkbox=False
+            )
+            
+            # Optimized column configuration for performance
+            gb.configure_columns(
+                defaultColDef=dict(
+                    sortable=True,
+                    filterable=False,  # Disable inline filters for speed
+                    resizable=True
+                )
+            )
+            
+            gridOptions = gb.build()
+            
+            # Add client-side sort to reduce server overhead
+            gridOptions['domLayout'] = 'normal'
+            gridOptions['rowBuffer'] = 0
+            gridOptions['cacheBlockSize'] = 20
+            
+            # Display AG Grid
+            grid_response = AgGrid(
+                grid_df,
+                gridOptions=gridOptions,
+                height=600,
+                use_container_width=True,
+                theme="alpine",
+                allow_unsafe_jscode=False  # Disable unsafe JS for performance
+            )
+            
+            st.info("💡 Use filters, sort by any column, and scroll horizontally for more data")
         
-        start = (st.session_state.page - 1) * ITEMS_PER_PAGE
-        end = start + ITEMS_PER_PAGE
-        view_df = filtered_df.iloc[start:end]
-    else:
-        view_df = filtered_df
+        with stats_col:
+            st.markdown("### 📈 Global Stats")
+            st.divider()
 
-    # RENDER CARDS
-    grid_cols = st.columns(4)
-    bg_colors = ['#FF9AA2', '#FFB7B2', '#FFDAC1', '#E2F0CB', '#B5EAD7', '#C7CEEA']
-    
-    for i, (idx, row) in enumerate(view_df.iterrows()):
-        col = grid_cols[i % 4]
-        
-        # Extract Safe Data
-        title = row['Book Title'] or "Untitled"
-        author = row['Author(s)'] or "Unknown Author"
-        year = str(int(row['Year_Numeric'])) if pd.notna(row['Year_Numeric']) else ""
-        lang = row['Language'] or ""
-        
-        color = random.choice(bg_colors)
-        
-        with col:
-            with st.container(border=True):
-                # Simple Aesthetic Card
+            # Calculate statistics (global)
+            total_books = len(data)
+            telugu_books = data['Language'].fillna("").str.lower().eq('telugu').sum()
+            num_languages = data['Language'].dropna().nunique()
+            num_categories = data['Category'].dropna().nunique()
+            num_authors = data['Author(s)'].dropna().nunique()
+            num_publishers = data['Publisher'].dropna().nunique()
+
+            # Display requested global stats as compact, button-like cards
+            stat_col1, stat_col2 = st.columns(2, gap="small")
+            with stat_col1:
                 st.markdown(f"""
-                    <div style="height: 120px; background-color: {color}; border-radius: 8px; display: flex; align-items: center; justify-content: center; margin-bottom: 10px;">
-                        <span style="font-size: 2.5rem; color: #fff; text-shadow: 0 2px 4px rgba(0,0,0,0.1);">📚</span>
-                    </div>
-                    <div style="height: 60px; overflow: hidden; margin-bottom: 5px;">
-                        <span style="font-weight: 600; font-size: 1rem; color: #333;">{title[:50]}{'...' if len(title)>50 else ''}</span>
-                    </div>
-                    <div style="font-size: 0.85rem; color: #666; margin-bottom: 2px;">{author[:30]}{'...' if len(author)>30 else ''}</div>
-                    <div style="font-size: 0.8rem; color: #999;">{f'{year} • ' if year else ''}{lang}</div>
+                <div role="button" tabindex="0" style="background: #fff; border: 1px solid #e6e6e6; border-radius: 8px; padding: 10px; text-align: center; cursor: pointer; transition: transform 0.12s; margin-bottom: 8px;">
+                    <div style="font-size: 0.75rem; color: #666; font-weight: 500; margin-bottom: 4px;">Total Books</div>
+                    <div style="font-size: 1.05rem; font-weight: 700; color: #222;">{total_books:,}</div>
+                </div>
                 """, unsafe_allow_html=True)
-                
-                if st.button("Details", key=f"d_{idx}", use_container_width=True):
-                    st.session_state['sel_book_idx'] = idx
-                    st.session_state['sel_book_data'] = row.to_dict()
-                    st.session_state['show_d'] = True
+
+                st.markdown(f"""
+                <div role="button" tabindex="0" style="background: #fff; border: 1px solid #e6e6e6; border-radius: 8px; padding: 10px; text-align: center; cursor: pointer; transition: transform 0.12s; margin-bottom: 8px;">
+                    <div style="font-size: 0.75rem; color: #666; font-weight: 500; margin-bottom: 4px;">Telugu Books</div>
+                    <div style="font-size: 1.05rem; font-weight: 700; color: #d32f2f;">{telugu_books:,}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                st.markdown(f"""
+                <div role="button" tabindex="0" style="background: #fff; border: 1px solid #e6e6e6; border-radius: 8px; padding: 10px; text-align: center; cursor: pointer; transition: transform 0.12s; margin-bottom: 8px;">
+                    <div style="font-size: 0.75rem; color: #666; font-weight: 500; margin-bottom: 4px;">Languages</div>
+                    <div style="font-size: 1.05rem; font-weight: 700; color: #222;">{num_languages}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            with stat_col2:
+                st.markdown(f"""
+                <div role="button" tabindex="0" style="background: #fff; border: 1px solid #e6e6e6; border-radius: 8px; padding: 10px; text-align: center; cursor: pointer; transition: transform 0.12s; margin-bottom: 8px;">
+                    <div style="font-size: 0.75rem; color: #666; font-weight: 500; margin-bottom: 4px;">Categories</div>
+                    <div style="font-size: 1.05rem; font-weight: 700; color: #222;">{num_categories}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                st.markdown(f"""
+                <div role="button" tabindex="0" style="background: #fff; border: 1px solid #e6e6e6; border-radius: 8px; padding: 10px; text-align: center; cursor: pointer; transition: transform 0.12s; margin-bottom: 8px;">
+                    <div style="font-size: 0.75rem; color: #666; font-weight: 500; margin-bottom: 4px;">Authors</div>
+                    <div style="font-size: 1.05rem; font-weight: 700; color: #222;">{num_authors:,}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                st.markdown(f"""
+                <div role="button" tabindex="0" style="background: #fff; border: 1px solid #e6e6e6; border-radius: 8px; padding: 10px; text-align: center; cursor: pointer; transition: transform 0.12s; margin-bottom: 8px;">
+                    <div style="font-size: 0.75rem; color: #666; font-weight: 500; margin-bottom: 4px;">Publishers</div>
+                    <div style="font-size: 1.05rem; font-weight: 700; color: #222;">{num_publishers}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+
+    # ==============================================================================
+    # 6b. CARD VIEW (ORIGINAL)
+    # ==============================================================================
+    elif st.session_state.view_mode == "Card":
+        st.markdown("### 📚 Card View")
+        
+        # PAGINATION & RENDERING
+        ITEMS_PER_PAGE = 20
+        if len(filtered_df) > ITEMS_PER_PAGE:
+            total_pages = math.ceil(len(filtered_df) / ITEMS_PER_PAGE)
+            
+            # Page State
+            if 'page' not in st.session_state: st.session_state.page = 1
+            
+            # Pagination Controls (Centered)
+            c_p1, c_p2, c_p3 = st.columns([1, 2, 1])
+            with c_p2:
+                st.markdown(f"<div style='text-align:center'>Page {st.session_state.page} of {total_pages}</div>", unsafe_allow_html=True)
+                pp_col, nn_col = st.columns(2)
+                with pp_col:
+                    if st.button("Previous") and st.session_state.page > 1:
+                        st.session_state.page -= 1
+                with nn_col:
+                    if st.button("Next") and st.session_state.page < total_pages:
+                        st.session_state.page += 1
+            
+            start = (st.session_state.page - 1) * ITEMS_PER_PAGE
+            end = start + ITEMS_PER_PAGE
+            view_df = filtered_df.iloc[start:end]
+        else:
+            view_df = filtered_df
+
+        # RENDER CARDS
+        grid_cols = st.columns(4)
+        bg_colors = ['#FF9AA2', '#FFB7B2', '#FFDAC1', '#E2F0CB', '#B5EAD7', '#C7CEEA']
+        
+        for i, (idx, row) in enumerate(view_df.iterrows()):
+            col = grid_cols[i % 4]
+            
+            # Extract Safe Data
+            title = row['Book Title'] or "Untitled"
+            author = row['Author(s)'] or "Unknown Author"
+            year = str(int(row['Year_Numeric'])) if pd.notna(row['Year_Numeric']) else ""
+            lang = row['Language'] or ""
+            
+            color = random.choice(bg_colors)
+            
+            with col:
+                with st.container(border=True):
+                    # Simple Aesthetic Card
+                    st.markdown(f"""
+                        <div style="height: 120px; background-color: {color}; border-radius: 8px; display: flex; align-items: center; justify-content: center; margin-bottom: 10px;">
+                            <span style="font-size: 2.5rem; color: #fff; text-shadow: 0 2px 4px rgba(0,0,0,0.1);">📚</span>
+                        </div>
+                        <div style="height: 60px; overflow: hidden; margin-bottom: 5px;">
+                            <span style="font-weight: 600; font-size: 1rem; color: #333;">{title[:50]}{'...' if len(title)>50 else ''}</span>
+                        </div>
+                        <div style="font-size: 0.85rem; color: #666; margin-bottom: 2px;">{author[:30]}{'...' if len(author)>30 else ''}</div>
+                        <div style="font-size: 0.8rem; color: #999;">{f'{year} • ' if year else ''}{lang}</div>
+                    """, unsafe_allow_html=True)
+                    
+                    if st.button("Details", key=f"d_{idx}", use_container_width=True):
+                        st.session_state['sel_book_idx'] = idx
+                        st.session_state['sel_book_data'] = row.to_dict()
+                        st.session_state['show_d'] = True
 
 else:
     st.markdown("<div style='text-align:center; padding: 50px; color: #888;'>No books found. Try a different keyword like 'History', '1947', or 'Telugu'.</div>", unsafe_allow_html=True)
